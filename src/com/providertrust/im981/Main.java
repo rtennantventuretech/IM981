@@ -133,7 +133,7 @@ public class Main
             addressLineStmt.setFetchDirection(FETCH_FORWARD);
 
             reorderAuditTable(tuples, addressLineStmt, selectAudit, updateOrder);
-            writeConn.commit();
+//            writeConn.commit();
         }
     }
 

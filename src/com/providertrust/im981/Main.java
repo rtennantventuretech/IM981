@@ -123,7 +123,7 @@ public class Main
         try(Connection readOnlyConn = _dataSource.getConnection();
             Statement addressLineStmt = readOnlyConn.createStatement();
             Connection writeConn = _dataSource.getConnection();
-            PreparedStatement selectAudit = writeConn.prepareStatement(selectAuditSQL, TYPE_SCROLL_SENSITIVE, CONCUR_UPDATABLE);
+            PreparedStatement selectAudit = writeConn.prepareStatement(selectAuditSQL, TYPE_SCROLL_INSENSITIVE, CONCUR_UPDATABLE);
             PreparedStatement updateOrder = writeConn.prepareStatement(updateOrderSQL))
         {
             readOnlyConn.setReadOnly(true);
@@ -181,6 +181,7 @@ public class Main
                         {
                             tuple.setOrderId(order);
                             auditResult.updateInt(ORDER_COLUMN, order);
+                            auditResult.updateRow();
                             log(String.format("REV-INSERT: Update order from %d to %d for %s",
                                 (orderId == null ? -1 : orderId),
                                 order,
@@ -191,7 +192,10 @@ public class Main
                         assert tuples.contains(tuple);
                         order = tuples.lastIndexOf(tuple) - 1; // 0 based
                         if (orderId == null)
+                        {
                             auditResult.updateInt(ORDER_COLUMN, order);
+                            auditResult.updateRow();
+                        }
                         break;
                     case 2:
                         if(!tuples.remove(tuple))

@@ -254,7 +254,7 @@ public class Main
                 case 2:
                     if (!currentTuples.remove(tuple)) {
                         log("REV-DELETE: !!DATA CORRUPTION!! Tuple doesn't exist -> " + tuple);
-                        // Bailing - data needs to be fixed first
+                        // Bailing - data needs to be fixed first, no need to re-try guess the ordering anyway.
                         return true;
                     }
 
@@ -292,6 +292,9 @@ public class Main
         }
         catch (SQLException e)
         {
+            // We are dealing with a specific case for Duplicate key violation for the address table. If this case
+            // happens, we treat it as Data corruption and rollback this single trancation and continue processing
+            // other records.
             if (e.getSQLState().equals("23505"))
             {
                 try {

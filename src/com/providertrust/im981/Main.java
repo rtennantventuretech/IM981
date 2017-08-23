@@ -3,14 +3,8 @@ package com.providertrust.im981;
 import org.postgresql.ds.PGSimpleDataSource;
 
 import javax.sql.DataSource;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.util.ArrayList;
-import java.util.Map;
-import java.util.Objects;
+import java.sql.*;
+import java.util.*;
 
 import static java.sql.ResultSet.*;
 
@@ -22,15 +16,19 @@ public class Main
 {
     static class Tuple
     {
+        private final Integer _rev;
         private final long _addressLinesId;
         private final String _line;
+        private Integer _revType;
         private Integer _orderId;
         private final int _rowNumber;
 
-        Tuple(long addressLinesId, String line, Integer orderId, int rowNumber)
+        Tuple(Integer rev, long addressLinesId, String line, Integer revType, Integer orderId, int rowNumber)
         {
+            _rev = rev;
             _addressLinesId = addressLinesId;
             _line = line;
+            _revType = revType;
             _orderId = orderId;
             _rowNumber = rowNumber;
         }
@@ -43,6 +41,26 @@ public class Main
         void setOrderId(Integer orderId)
         {
             _orderId = orderId;
+        }
+
+        Integer getRevType()
+        {
+            return _revType;
+        }
+
+        Integer getRev()
+        {
+            return _rev;
+        }
+
+        long getAddressLinesId()
+        {
+            return _addressLinesId;
+        }
+
+        String getLine()
+        {
+            return _line;
         }
 
         @Override
@@ -65,7 +83,8 @@ public class Main
         public String toString()
         {
             return "Tuple{" + "addressLinesId=" + _addressLinesId +
-                ", line='" + _line + '\'' +
+                ", line='" + _line + '\'' + ", rev='" + _rev + '\'' +
+                    ", revType='" + _revType + '\'' +
                 ", rowNumber=" + _rowNumber +
                 '}';
         }
@@ -123,7 +142,8 @@ public class Main
         try(Connection readOnlyConn = _dataSource.getConnection();
             Statement addressLineStmt = readOnlyConn.createStatement();
             Connection writeConn = _dataSource.getConnection();
-            PreparedStatement selectAudit = writeConn.prepareStatement(selectAuditSQL, TYPE_SCROLL_INSENSITIVE, CONCUR_UPDATABLE);
+            PreparedStatement selectAudit = writeConn.prepareStatement(selectAuditSQL, TYPE_SCROLL_INSENSITIVE,
+                    CONCUR_UPDATABLE);
             PreparedStatement updateOrder = writeConn.prepareStatement(updateOrderSQL))
         {
             readOnlyConn.setReadOnly(true);
@@ -137,8 +157,8 @@ public class Main
         }
     }
 
-    private static void reorderAuditTable(ArrayList<Tuple> tuples, Statement addressLineStmt, PreparedStatement selectAudit,
-        PreparedStatement updateOrder)
+    private static void reorderAuditTable(ArrayList<Tuple> tuples, Statement addressLineStmt,
+                                          PreparedStatement selectAudit, PreparedStatement updateOrder)
         throws SQLException
     {
         try (ResultSet gridAddressIdResult = addressLineStmt.executeQuery(//WHERE addresslines_id = 429854
@@ -171,69 +191,145 @@ public class Main
                 if (auditResult.wasNull())
                     orderId = null;
                 int rowNumber = auditResult.getInt(5);
-                Tuple tuple = new Tuple(addressLinesId, line, orderId, rowNumber);
-                switch (revType)
-                {
-                    case 0:
-                        tuples.add(tuple);
-                        int order = tuples.size() - 1; // 0 based
-                        if (orderId == null || orderId != order)
-                        {
-                            tuple.setOrderId(order);
-                            auditResult.updateInt(ORDER_COLUMN, order);
-                            auditResult.updateRow();
-                            log(String.format("REV-INSERT: Update order from %d to %d for %s",
-                                (orderId == null ? -1 : orderId),
+                Tuple tuple = new Tuple(rev, addressLinesId, line, revType, orderId, rowNumber);
+                tuples.add(tuple);
+            }
+
+            if (!processTuples(tuples, updateOrder))
+            {
+                log("Re-Order addresslines_aud ID = " + tuples.get(0).getAddressLinesId() + " and try again.");
+                if (processTuples(reOrderTuples(tuples), updateOrder))
+                    log("!!Success!!");
+                else
+                    log("!!Still failed!! Need manual fix for addresslines_aud ID = "
+                            + tuples.get(0).getAddressLinesId());
+            }
+
+        }
+    }
+
+    private static boolean processTuples(ArrayList<Tuple> tupleList, PreparedStatement updateOrder)
+    {
+        final HashMap<Tuple, Integer> currentHistoryMap = new LinkedHashMap<>();
+        final ArrayList<Tuple> currentTuples = new ArrayList<>();
+        int order;
+
+        for (Tuple tuple : tupleList) {
+            int revType = tuple.getRevType();
+            switch (revType) {
+                case 0:
+                    currentTuples.add(tuple);
+                    order = currentTuples.size() - 1; // 0 based
+                    // before we add a new line, we need to check if the new line order has already being taken
+                    // by any previous existing line
+                    if (order > 0 &&
+                            currentTuples.stream().anyMatch(tuple1 -> (currentHistoryMap.get(tuple1) !=
+                                    null && currentHistoryMap.get(tuple1) == currentTuples.size() - 1))) {
+                        log("REV-DELETE: !!We guessed the wrong order!! " +
+                                "We need to manually fix addresslines ID" + tuple);
+                        return false;
+                    }
+                    currentHistoryMap.put(tuple, order);
+                    if (tuple.getOrderId() == null || tuple.getOrderId() != order) {
+                        log(String.format("REV-INSERT: Update order from %d to %d for %s",
+                                (tuple.getOrderId() == null ? -1 : tuple.getOrderId()),
                                 order,
                                 tuple.toString()));
-                        }
-                        break;
-                    case 1:
-                        assert tuples.contains(tuple);
-                        order = tuples.lastIndexOf(tuple) - 1; // 0 based
-                        if (orderId == null)
-                        {
-                            auditResult.updateInt(ORDER_COLUMN, order);
-                            auditResult.updateRow();
-                        }
-                        break;
-                    case 2:
-                        if(!tuples.remove(tuple))
-                        {
-                            log("REV-DELETE: !!DATA CORRUPTION!! Tuple doesn't exist -> " + tuple);
-                            // Bailing - data needs to be fixed first
-                            return;
-                        }
+                        tuple.setOrderId(order);
+                        executeUpdateOrderId(updateOrder, tuple, order);
+                    }
+                    break;
+                case 1:
+                    assert currentTuples.contains(tuple);
+                    order = currentTuples.lastIndexOf(tuple) - 1; // 0 based
+                    currentHistoryMap.put(tuple, order);
+                    if (tuple.getOrderId() == null) {
+                        log(String.format("REV-UPDATE: Update order from %d to %d for %s",
+                                (tuple.getOrderId() == null ? -1 : tuple.getOrderId()),
+                                order,
+                                tuple.toString()));
+                        executeUpdateOrderId(updateOrder, tuple, order);
+                    }
+                    break;
+                case 2:
+                    if (!currentTuples.remove(tuple)) {
+                        log("REV-DELETE: !!DATA CORRUPTION!! Tuple doesn't exist -> " + tuple);
+                        // Bailing - data needs to be fixed first, no need to re-try guess the ordering anyway.
+                        return true;
+                    }
 
-                        if (!tuples.isEmpty())
-                        {
-                            for (int i = 0; i < tuples.size(); i++)
-                            {
-                                Tuple toCheck = tuples.get(i);
-                                //noinspection UnnecessaryUnboxing
-                                if (toCheck.getOrderId() == null || toCheck.getOrderId().intValue() != i)
-                                {
-                                    log(String.format("REV-DELETE: Re-order from %d to %d for %s",
-                                        (toCheck.getOrderId() == null ? -1 : toCheck.getOrderId()),
-                                        i,
-                                        toCheck.toString()));
-                                    toCheck.setOrderId(i);
-                                    updateOrder.setInt(1, i);
-                                    updateOrder.setInt(2, rev);
-                                    updateOrder.setLong(3, addressLinesId);
-                                    updateOrder.setString(4, line);
-                                    updateOrder.setInt(5, revType);
-                                    assert updateOrder.executeUpdate() == 1 : "Expected one row to be updated.";
-                                }
-                            }
-                        }
+                    if (currentHistoryMap.get(tuple) != null
+                            && !Objects.equals(tuple.getOrderId(), currentHistoryMap.get(tuple))) {
+                        log(String.format("REV-DELETE: Re-order from %d to %d for %s",
+                                (tuple.getOrderId() == null ? -1 : tuple.getOrderId()),
+                                currentHistoryMap.get(tuple),
+                                tuple.toString()));
+                        executeUpdateOrderId(updateOrder, tuple, currentHistoryMap.get(tuple));
+                    }
+                    currentHistoryMap.remove(tuple);
 
-                        break;
-                    default:
-                        throw new AssertionError("What's a " + revType + " revType");
-                }
+                    break;
+                default:
+                    throw new AssertionError("What's a " + revType + " revType");
             }
         }
+        return true;
+    }
+
+    private static void executeUpdateOrderId(PreparedStatement updateOrder, Tuple tuple, Integer orderId)
+    {
+        Savepoint savepoint = null;
+        try
+        {
+            updateOrder.setInt(1, orderId);
+            updateOrder.setInt(2, tuple.getRev());
+            updateOrder.setLong(3, tuple.getAddressLinesId());
+            updateOrder.setString(4, tuple.getLine());
+            updateOrder.setInt(5, tuple.getRevType());
+            savepoint = updateOrder.getConnection().setSavepoint();
+            assert updateOrder.executeUpdate() == 1 : "Expected one row to be updated.";
+            updateOrder.getConnection().releaseSavepoint(savepoint);
+        }
+        catch (SQLException e)
+        {
+            // We are dealing with a specific case for Duplicate key violation for the address table. If this case
+            // happens, we treat it as Data corruption and rollback this single trancation and continue processing
+            // other records.
+            if (e.getSQLState().equals("23505"))
+            {
+                try {
+                    if (savepoint != null)
+                        updateOrder.getConnection().rollback(savepoint);
+                } catch (SQLException e1) {
+                    log("Can not rollback savepoint!");
+                    e1.printStackTrace();
+                }
+            }
+
+            log("!!SQLException, Can not update order_id!! May need manual fix: " + tuple);
+        }
+    }
+
+    /**
+     * Re-order the Tuples such that the first 2 consecutive revtype = 0 rows will switch their order
+     * @param tuples the original tuples
+     * @return the re-ordered tuples
+     */
+    private static ArrayList<Tuple> reOrderTuples(ArrayList<Tuple> tuples)
+    {
+        // first find the indexes of the first two consecutive revtype = 0
+        int i, j;
+        for (i = 0, j = 1; j < tuples.size(); i++, j++)
+        {
+            if (tuples.get(i).getRevType() == 0 && tuples.get(j).getRevType() == 0
+                    && Objects.equals(tuples.get(i).getRev(), tuples.get(j).getRev()))
+            {
+                Collections.swap(tuples, i, j);
+                break;
+            }
+        }
+
+        return tuples;
     }
 
     static void log(String log)

@@ -153,6 +153,7 @@ public class Main
             addressLineStmt.setFetchDirection(FETCH_FORWARD);
 
             reorderAuditTable(tuples, addressLineStmt, selectAudit, updateOrder);
+            readOnlyConn.commit();
             writeConn.commit();
         }
     }
@@ -162,8 +163,8 @@ public class Main
         throws SQLException
     {
         try (ResultSet gridAddressIdResult = addressLineStmt.executeQuery(//WHERE addresslines_id = 429854
-            "select distinct addresslines_id from ptgrid.addresslines_aud  "
-                + "GROUP BY addresslines_id, rev having count(rev) > 1 ORDER BY addresslines_id"))
+            "select distinct addresslines_id from ptgrid.addresslines_aud WHERE addresslines_id"
+                + " GROUP BY addresslines_id, rev having count(rev) > 1 ORDER BY addresslines_id"))
         {
             while (gridAddressIdResult.next())
             {

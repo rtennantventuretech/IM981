@@ -1,0 +1,12 @@
+<component name="libraryTable">
+  <library name="org.postgresql:postgresql:Release" type="repository">
+    <properties maven-id="org.postgresql:postgresql:RELEASE" />
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/lib/postgresql-42.1.4.jre7.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES>
+      <root url="jar://$PROJECT_DIR$/lib/postgresql-42.1.4.jre7-sources.jar!/" />
+    </SOURCES>
+  </library>
+</component>

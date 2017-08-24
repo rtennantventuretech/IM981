@@ -3,10 +3,20 @@ package com.providertrust.im981;
 import org.postgresql.ds.PGSimpleDataSource;
 
 import javax.sql.DataSource;
-import java.sql.*;
-import java.util.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Savepoint;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
 
-import static java.sql.ResultSet.*;
+import static java.sql.ResultSet.FETCH_FORWARD;
 
 /**
  * Program to recreate audit log for addresslines
@@ -142,8 +152,7 @@ public class Main
         try(Connection readOnlyConn = _dataSource.getConnection();
             Statement addressLineStmt = readOnlyConn.createStatement();
             Connection writeConn = _dataSource.getConnection();
-            PreparedStatement selectAudit = writeConn.prepareStatement(selectAuditSQL, TYPE_SCROLL_INSENSITIVE,
-                    CONCUR_UPDATABLE);
+            PreparedStatement selectAudit = readOnlyConn.prepareStatement(selectAuditSQL);
             PreparedStatement updateOrder = writeConn.prepareStatement(updateOrderSQL))
         {
             readOnlyConn.setReadOnly(true);
@@ -162,7 +171,7 @@ public class Main
                                           PreparedStatement selectAudit, PreparedStatement updateOrder)
         throws SQLException
     {
-        try (ResultSet gridAddressIdResult = addressLineStmt.executeQuery(//WHERE addresslines_id = 429854
+        try (ResultSet gridAddressIdResult = addressLineStmt.executeQuery(//WHERE addresslines_id = 429854 906724842
             "select distinct addresslines_id from ptgrid.addresslines_aud "
                 + " GROUP BY addresslines_id, rev having count(rev) > 1 ORDER BY addresslines_id"))
         {
@@ -195,21 +204,48 @@ public class Main
                 Tuple tuple = new Tuple(rev, addressLinesId, line, revType, orderId, rowNumber);
                 tuples.add(tuple);
             }
-
-            if (!processTuples(tuples, updateOrder))
+            Connection connection = updateOrder.getConnection();
+            Savepoint savepoint = connection.setSavepoint();
+            try
             {
-                log("Re-Order addresslines_aud ID = " + tuples.get(0).getAddressLinesId() + " and try again.");
-                if (processTuples(reOrderTuples(tuples), updateOrder))
-                    log("!!Success!!");
-                else
-                    log("!!Still failed!! Need manual fix for addresslines_aud ID = "
+                if (!processTuples(tuples, updateOrder))
+                {
+                    log("Re-Order addresslines_aud ID = " + tuples.get(0).getAddressLinesId() + " and try again.");
+                    if (processTuples(reOrderTuples(tuples), updateOrder))
+                        log("!!Success!!");
+                    else
+                        log("!!Still failed!! Need manual fix for addresslines_aud ID = "
                             + tuples.get(0).getAddressLinesId());
+                }
+                connection.releaseSavepoint(savepoint);
+            }
+            catch (SQLException e)
+            {
+                // We are dealing with a specific case for Duplicate key violation for the address table. If this case
+                // happens, we treat it as Data corruption and rollback this single trancation and continue processing
+                // other records.
+                if ("23505".equals(e.getSQLState()))
+                {
+                    try
+                    {
+                        connection.rollback(savepoint);
+                    }
+                    catch (SQLException e1)
+                    {
+                        log("Can not rollback savepoint!");
+                        e1.printStackTrace();
+                    }
+                }
+                else
+                {
+                    throw e;
+                }
             }
 
         }
     }
 
-    private static boolean processTuples(ArrayList<Tuple> tupleList, PreparedStatement updateOrder)
+    private static boolean processTuples(ArrayList<Tuple> tupleList, PreparedStatement updateOrder) throws SQLException
     {
         final HashMap<Tuple, Integer> currentHistoryMap = new LinkedHashMap<>();
         final ArrayList<Tuple> currentTuples = new ArrayList<>();
@@ -277,38 +313,16 @@ public class Main
         return true;
     }
 
-    private static void executeUpdateOrderId(PreparedStatement updateOrder, Tuple tuple, Integer orderId)
+    private static void executeUpdateOrderId(PreparedStatement updateOrder, Tuple tuple, Integer orderId) throws SQLException
     {
-        Savepoint savepoint = null;
-        try
-        {
-            updateOrder.setInt(1, orderId);
-            updateOrder.setInt(2, tuple.getRev());
-            updateOrder.setLong(3, tuple.getAddressLinesId());
-            updateOrder.setString(4, tuple.getLine());
-            updateOrder.setInt(5, tuple.getRevType());
-            savepoint = updateOrder.getConnection().setSavepoint();
-            assert updateOrder.executeUpdate() == 1 : "Expected one row to be updated.";
-            updateOrder.getConnection().releaseSavepoint(savepoint);
-        }
-        catch (SQLException e)
-        {
-            // We are dealing with a specific case for Duplicate key violation for the address table. If this case
-            // happens, we treat it as Data corruption and rollback this single trancation and continue processing
-            // other records.
-            if (e.getSQLState().equals("23505"))
-            {
-                try {
-                    if (savepoint != null)
-                        updateOrder.getConnection().rollback(savepoint);
-                } catch (SQLException e1) {
-                    log("Can not rollback savepoint!");
-                    e1.printStackTrace();
-                }
-            }
-
-            log("!!SQLException, Can not update order_id!! May need manual fix: " + tuple);
-        }
+        updateOrder.setInt(1, orderId);
+        updateOrder.setInt(2, tuple.getRev());
+        updateOrder.setLong(3, tuple.getAddressLinesId());
+        updateOrder.setString(4, tuple.getLine());
+        updateOrder.setInt(5, tuple.getRevType());
+        int count = updateOrder.executeUpdate();
+//        log(updateOrder + ": UPDATE " + count);
+        assert count == 1 : "Expected one row to be updated.";
     }
 
     /**

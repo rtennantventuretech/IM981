@@ -171,9 +171,8 @@ public class Main
                                           PreparedStatement selectAudit, PreparedStatement updateOrder)
         throws SQLException
     {
-        try (ResultSet gridAddressIdResult = addressLineStmt.executeQuery(//WHERE addresslines_id = 429854 906724842
-            "select distinct addresslines_id from ptgrid.addresslines_aud "
-                + " GROUP BY addresslines_id, rev having count(rev) > 1 ORDER BY addresslines_id"))
+        try (ResultSet gridAddressIdResult = addressLineStmt.executeQuery(//WHERE addresslines_id = 592069, 561699
+            "select distinct addresslines_id from ptgrid.addresslines_aud"))
         {
             while (gridAddressIdResult.next())
             {

@@ -162,9 +162,8 @@ public class Main
                                           PreparedStatement selectAudit, PreparedStatement updateOrder)
         throws SQLException
     {
-        try (ResultSet gridAddressIdResult = addressLineStmt.executeQuery(//WHERE addresslines_id = 429854
-            "select distinct addresslines_id from ptgrid.addresslines_aud "
-                + " GROUP BY addresslines_id, rev having count(rev) > 1 ORDER BY addresslines_id"))
+        try (ResultSet gridAddressIdResult = addressLineStmt.executeQuery(//WHERE addresslines_id = 592069, 561699
+            "select distinct addresslines_id from ptgrid.addresslines_aud"))
         {
             while (gridAddressIdResult.next())
             {
@@ -288,7 +287,8 @@ public class Main
             updateOrder.setString(4, tuple.getLine());
             updateOrder.setInt(5, tuple.getRevType());
             savepoint = updateOrder.getConnection().setSavepoint();
-            assert updateOrder.executeUpdate() == 1 : "Expected one row to be updated.";
+            if (updateOrder.executeUpdate() != 1)
+                log("Expected one row to be updated for tuple: " + tuple);
             updateOrder.getConnection().releaseSavepoint(savepoint);
         }
         catch (SQLException e)
